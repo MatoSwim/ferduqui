@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Ferduqui</title>
+  <rect width="512" height="512" rx="116" fill="#6F9A45"/>
+  <!-- tarjeta rosita asomándose -->
+  <rect x="150" y="104" width="226" height="150" rx="22" fill="#F2A7BC" transform="rotate(-9 263 179)"/>
+  <rect x="166" y="138" width="150" height="16" rx="8" fill="#E58AA6" transform="rotate(-9 263 179)"/>
+  <!-- cartera -->
+  <rect x="90" y="184" width="314" height="230" rx="46" fill="#FBFCF6"/>
+  <rect x="90" y="184" width="314" height="34" rx="17" fill="#E6EDD7"/>
+  <!-- broche -->
+  <rect x="326" y="266" width="106" height="72" rx="28" fill="#E6EDD7"/>
+  <circle cx="380" cy="302" r="12" fill="#6F9A45"/>
+  <!-- la F -->
+  <rect x="146" y="238" width="44" height="140" rx="13" fill="#3E5C25"/>
+  <rect x="146" y="238" width="132" height="40" rx="13" fill="#3E5C25"/>
+  <rect x="146" y="294" width="104" height="36" rx="13" fill="#3E5C25"/>
+</svg>

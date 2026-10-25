@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Ferduqui</title>
+  <meta name="description" content="Para que veas a dónde se va tu dinero.">
+  <meta name="theme-color" content="#F3F5EA">
+  <meta name="color-scheme" content="light">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/svg+xml" href="iconos/icono.svg">
+  <link rel="icon" type="image/png" href="iconos/favicon-64.png">
+  <link rel="apple-touch-icon" href="iconos/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Ferduqui">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="preload" href="fuentes/fredoka.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fuentes/nunito.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hoja-fondo" hidden></div>
+  <section id="hoja" role="dialog" aria-modal="true" aria-labelledby="hoja-titulo" tabindex="-1" hidden></section>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <noscript><p style="padding:24px;font-family:sans-serif">Ferduqui necesita JavaScript para funcionar.</p></noscript>
+  <script src="app.js"></script>
+</body>
+</html>
