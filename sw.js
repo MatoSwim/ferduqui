@@ -1,7 +1,7 @@
 /* Ferduqui — guarda la app en el cel para que abra sin internet.
    Cuando cambies cualquier archivo, sube el número de VERSION
    para que los cels descarguen la versión nueva. */
-const VERSION = 'ferduqui-v3';
+const VERSION = 'ferduqui-v4';
 const ARCHIVOS = [
   './',
   'index.html',

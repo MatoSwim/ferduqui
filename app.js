@@ -202,9 +202,10 @@ function pagoDe(C, dp) {
 const esMsi = v => v.tipo === 'gasto' && +v.meses > 1;
 // Lo que el banco ya te cobró (en estados de cuenta) hasta el corte C, sin restar pagos
 function exigibleAl(m, C) {
-  const dc = +m.diaCorte, Ci = iso(C), mesPago = mesClave(pagoDe(C, +m.diaPago));
-  let x = (+m.deudaInicial || 0) - suma(planDe(m), ([, v]) => +v);
-  for (const [mes, v] of planDe(m)) if (mes <= mesPago) x += +v;
+  const dc = +m.diaCorte, Ci = iso(C), mesCorte = mesClave(C);
+  const suelta = (+m.deudaInicial || 0) - suma(planDe(m), ([, v]) => +v);
+  let x = !m.primerCorte || m.primerCorte <= Ci ? suelta : Math.min(0, suelta);
+  for (const [mes, v] of planDe(m)) if (mes <= mesCorte) x += +v;
   for (const v of movs()) {
     const e = efecto(v, m.id);
     if (e >= 0) continue;
@@ -213,29 +214,42 @@ function exigibleAl(m, C) {
   }
   return x;
 }
+function ultimoCorte(dc, h = hoy()) {
+  let c = fechaEnMes(h.getFullYear(), h.getMonth(), dc);
+  if (c > h) c = fechaEnMes(h.getFullYear(), h.getMonth() - 1, dc);
+  return c;
+}
+// primer corte cuyo pago todavía no pasa (ahí cae lo que debes hoy)
+function corteAbierto(dc, dp, h = hoy()) {
+  const c = ultimoCorte(dc, h);
+  return pagoDe(c, dp) < h ? fechaEnMes(c.getFullYear(), c.getMonth() + 1, dc) : c;
+}
 function abonosDe(m) { return suma(movs(), v => Math.max(0, efecto(v, m.id))); }
 function infoCredito(m) {
   const dc = +m.diaCorte, dp = +m.diaPago, h = hoy();
   const s = saldo(m), deuda = Math.max(0, -s), limite = +m.limite || 0;
   const r = { deuda, limite, disponible: limite ? redondear(limite - deuda) : null, porPagar: 0, corte: null, pago: null, sigCorte: null, diasPago: null, siguiente: 0, aMeses: [], faltaMeses: 0, proximos: [] };
   if (!dc || !dp) return r;
-  let corte = fechaEnMes(h.getFullYear(), h.getMonth(), dc);
-  if (corte > h) corte = fechaEnMes(h.getFullYear(), h.getMonth() - 1, dc);
-  let pago = fechaEnMes(corte.getFullYear(), corte.getMonth(), dp);
-  if (pago <= corte) pago = fechaEnMes(corte.getFullYear(), corte.getMonth() + 1, dp);
+  const abonos = abonosDe(m);
+  const corteHecho = ultimoCorte(dc);
   let sig = fechaEnMes(h.getFullYear(), h.getMonth(), dc);
   if (sig <= h) sig = fechaEnMes(h.getFullYear(), h.getMonth() + 1, dc);
-  const abonos = abonosDe(m);
+  // El pago "de ahora" es el del último corte si su fecha de pago no ha pasado; si ya pasó, el del siguiente corte.
+  const vencido = pagoDe(corteHecho, dp) < h;
+  const corte = vencido ? sig : corteHecho, pago = pagoDe(corte, dp);
+  r.atrasado = vencido ? redondear(Math.max(0, exigibleAl(m, corteHecho) - abonos)) : 0;
+  r.pagoAtrasado = pagoDe(corteHecho, dp);
   r.porPagar = redondear(Math.max(0, exigibleAl(m, corte) - abonos));
+  r.cortePendiente = corte > h;
   r.siguiente = redondear(Math.max(0, exigibleAl(m, sig) - abonos));
   r.corte = corte; r.pago = pago; r.sigCorte = sig; r.diasPago = diasHasta(pago);
   // próximos pagos: el de ahora y lo que ya está programado para los siguientes meses
-  r.proximos = [{ pago, monto: r.porPagar, actual: true }];
+  r.proximos = [{ pago, corte, monto: r.porPagar, actual: true }];
   let C = corte, prev = exigibleAl(m, corte);
   for (let k = 1; k <= 24; k++) {
     C = fechaEnMes(corte.getFullYear(), corte.getMonth() + k, dc);
     const x = exigibleAl(m, C);
-    r.proximos.push({ pago: pagoDe(C, dp), monto: redondear(Math.max(0, x - prev)) });
+    r.proximos.push({ pago: pagoDe(C, dp), corte: C, monto: redondear(Math.max(0, x - prev)) });
     prev = x;
   }
   while (r.proximos.length > 2 && r.proximos[r.proximos.length - 1].monto <= 0) r.proximos.pop();
@@ -318,7 +332,15 @@ function pendientes() {
   const out = [], h = hoy(), mes = mesClave(h);
   for (const m of lista('metodos').filter(x => x.tipo === 'credito')) {
     const ic = infoCredito(m);
-    if (ic.pago && ic.porPagar > 0 && ic.diasPago <= 7) {
+    if (ic.atrasado > 0.5) {
+      out.push({
+        orden: -1, tipo: 'urgente', ico: '⏰',
+        titulo: `Se te pasó un pago de ${dinero(ic.atrasado)} de tu ${m.nombre}`,
+        texto: `Era el ${fechaLarga(ic.pagoAtrasado)}. Si ya lo pagaste, regístralo para que cuadre.`,
+        acciones: [['pagarTarjeta', 'Ya pagué', m.id, 'btn']],
+        notificar: true,
+      });
+    } else if (ic.pago && ic.porPagar > 0 && ic.diasPago <= 7) {
       out.push({
         orden: ic.diasPago, tipo: ic.diasPago <= 2 ? 'urgente' : 'aviso', ico: '💳',
         titulo: `Paga ${dinero(ic.porPagar)} de tu ${m.nombre}`,
@@ -1163,7 +1185,7 @@ function hojaMetodo(id) {
       </div>
       <p class="ayuda" style="margin-top:8px">Vienen en tu estado de cuenta. El de pago es el último día para pagar sin intereses.</p>
       <fieldset class="caja-meses"><legend>¿Cuánto te toca pagar cada mes?</legend>
-        <p class="ayuda">Si lo que debes ya viene repartido (por ejemplo, compras a meses), pon cuánto pagas cada mes. Lo ves en la app de tu banco. Si pagas todo de una vez, déjalo vacío.</p>
+        <p class="ayuda">Si lo que debes ya viene repartido (por ejemplo, compras a meses), pon cuánto te toca en cada corte. Lo ves en la app de tu banco. Si pagas todo de una vez, déjalo vacío.</p>
         <div id="plan"></div>
         <button type="button" class="btn suave ancho" style="margin-top:12px" data-a="otroMes">+ Otro mes</button>
         <p class="ayuda" id="plan-suma" style="margin-top:10px;font-weight:800"></p>
@@ -1180,12 +1202,7 @@ function hojaMetodo(id) {
 function mesesPlan(form) {
   const dp = +form.diaPago.value, dc = +form.diaCorte.value, h = hoy();
   let inicio = new Date(h.getFullYear(), h.getMonth(), 1);
-  if (dc && dp) {
-    let corte = fechaEnMes(h.getFullYear(), h.getMonth(), dc);
-    if (corte > h) corte = fechaEnMes(h.getFullYear(), h.getMonth() - 1, dc);
-    const p = pagoDe(corte, dp);
-    inicio = new Date(p.getFullYear(), p.getMonth(), 1);
-  }
+  if (dc && dp) { const c = corteAbierto(dc, dp); inicio = new Date(c.getFullYear(), c.getMonth(), 1); }
   const ini = mesClave(inicio);
   const conDato = Object.keys(planForm).filter(k => k >= ini && +planForm[k] > 0).sort();
   let n = Math.max(3, +form.dataset.mesesPlan || 0);
@@ -1199,7 +1216,8 @@ function mesesPlan(form) {
 function pintarPlan() {
   const form = $('#hoja form'), caja = $('#plan', form);
   if (!caja) return;
-  caja.innerHTML = mesesPlan(form).map(({ clave, nombre }) => `<label class="fila-plan"><span>${nombre.charAt(0).toUpperCase() + nombre.slice(1)}</span>
+  const dc = +form.diaCorte.value, dp = +form.diaPago.value;
+  caja.innerHTML = mesesPlan(form).map(({ clave, nombre }) => `<label class="fila-plan"><span>${nombre.charAt(0).toUpperCase() + nombre.slice(1)}${dc && dp ? `<small class="muted" style="display:block;font-weight:600;font-size:13px">Pagas el ${fechaCorta(pagoDe(fechaEnMes(+clave.slice(0, 4), +clave.slice(5) - 1, dc), dp))}</small>` : ''}</span>
     <input class="input" inputmode="decimal" data-mes="${clave}" value="${planForm[clave] ? esc(planForm[clave]) : ''}" placeholder="$0"></label>`).join('');
   sumaPlan();
 }
@@ -1244,11 +1262,12 @@ function guardarMetodo(form) {
     if (!String(f.get('deuda') || '').trim() && totalPlan) deuda = totalPlan;
     if (totalPlan > deuda + 0.5) { err.textContent = `Lo que repartiste por mes (${dinero(totalPlan)}) es más de lo que debes en total (${dinero(deuda)}).`; err.scrollIntoView({ block: 'center' }); return; }
     rec.deudaInicial = redondear(deuda + efectos);
+    rec.primerCorte = iso(corteAbierto(rec.diaCorte, rec.diaPago));
     delete rec.msiPrevias;
     delete rec.saldoInicial;
   } else {
     rec.saldoInicial = redondear(leerMonto(f.get('saldo')) - efectos);
-    delete rec.limite; delete rec.deudaInicial; delete rec.diaCorte; delete rec.diaPago; delete rec.msiPrevias; delete rec.plan;
+    delete rec.limite; delete rec.deudaInicial; delete rec.diaCorte; delete rec.diaPago; delete rec.msiPrevias; delete rec.plan; delete rec.primerCorte;
   }
   poner('metodos', rec);
   const volverA = pendienteTrasNueva;
@@ -1265,12 +1284,12 @@ function hojaDetalleMetodo(id) {
     const ic = infoCredito(m);
     if (ic.pago) {
       extra += ic.porPagar > 0
-        ? `<div class="caja-pago"><p>Para no pagar intereses, paga</p><strong>${dinero(ic.porPagar)}</strong><p>antes del ${fechaLarga(ic.pago)} (${enFaltan(ic.diasPago)}).</p>
+        ? `<div class="caja-pago"><p>Para no pagar intereses, paga</p><strong>${dinero(ic.porPagar)}</strong><p>antes del ${fechaLarga(ic.pago)} (${enFaltan(ic.diasPago)}).${ic.cortePendiente ? ` Tu corte es el ${fechaLarga(ic.corte)}; lo que gastes de contado antes de esa fecha se suma.` : ''}</p>
             <div class="fila-botones"><button class="btn" data-a="pagarTarjeta" data-id="${esc(m.id)}">Ya pagué</button></div></div>`
         : `<div class="caja-pago ok"><p>Vas al corriente: no tienes nada pendiente de este corte. 🍵</p></div>`;
       if (ic.proximos.length > 1 && ic.proximos.slice(1).some(x => x.monto > 0)) {
         extra += `<section class="bloque" style="margin-top:20px"><h3>Tus próximos pagos</h3>
-          <dl class="tabla-detalle" style="margin-top:10px">${ic.proximos.map(x => `<div><dt>${MESES[x.pago.getMonth()].charAt(0).toUpperCase() + MESES[x.pago.getMonth()].slice(1)}${x.pago.getFullYear() !== hoy().getFullYear() ? ' ' + x.pago.getFullYear() : ''} <span class="muted" style="font-size:13px">(${fechaCorta(x.pago)})</span></dt>
+          <dl class="tabla-detalle" style="margin-top:10px">${ic.proximos.map(x => `<div><dt>${MESES[x.corte.getMonth()].charAt(0).toUpperCase() + MESES[x.corte.getMonth()].slice(1)}${x.corte.getFullYear() !== hoy().getFullYear() ? ' ' + x.corte.getFullYear() : ''} <span class="muted" style="font-size:13px">(pagas el ${fechaCorta(x.pago)})</span></dt>
             <dd>${x.actual && x.monto <= 0 ? 'Pagado ✓' : dinero(x.monto)}</dd></div>`).join('')}</dl>
           <p class="ayuda" style="margin-top:8px">Lo que compres de contado se suma al pago que sigue; lo de meses, a cada mes.</p></section>`;
       }
