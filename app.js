@@ -128,7 +128,7 @@ const sync = { activo: false, error: null, ultima: 0, timer: null };
 let instalador = null;
 let fm = null;          // estado del formulario de movimiento
 let pendienteTrasNueva = null; // si creas una tarjeta desde el +, regresamos al + al terminar
-let previasForm = [];          // compras a meses que ya traías (formulario de tarjeta)
+let planForm = {};             // lo que ya debías, repartido por mes (formulario de tarjeta)
 let focoPrevio = null;
 
 const uid = () => sesion.usuarioId;
@@ -192,18 +192,19 @@ function cortesHasta(d, C, dc) {
   if (primero > C) return 0;
   return (C.getFullYear() - primero.getFullYear()) * 12 + C.getMonth() - primero.getMonth() + 1;
 }
-const previas = m => (m.msiPrevias || []).filter(p => +p.mensualidad > 0 && +p.restantes > 0);
-// mensualidades de una compra que ya traías, cobradas hasta el corte C (la del mes en que la registraste ya cuenta)
-function cobradasPrevia(p, C, dc) {
-  if (!p.desde) return 1;
-  return Math.min(+p.restantes, 1 + cortesHasta(masDias(deIso(p.desde), 1), C, dc));
+// Calendario de lo que ya debías: { 'AAAA-MM': monto } por mes de pago
+const planDe = m => Object.entries(m.plan || {}).filter(([, v]) => +v > 0);
+function pagoDe(C, dp) {
+  let pago = fechaEnMes(C.getFullYear(), C.getMonth(), dp);
+  if (pago <= C) pago = fechaEnMes(C.getFullYear(), C.getMonth() + 1, dp);
+  return pago;
 }
 const esMsi = v => v.tipo === 'gasto' && +v.meses > 1;
 // Lo que el banco ya te cobró (en estados de cuenta) hasta el corte C, sin restar pagos
 function exigibleAl(m, C) {
-  const dc = +m.diaCorte, Ci = iso(C);
-  let x = (+m.deudaInicial || 0) - suma(previas(m), p => p.mensualidad * p.restantes);
-  for (const p of previas(m)) x += p.mensualidad * cobradasPrevia(p, C, dc);
+  const dc = +m.diaCorte, Ci = iso(C), mesPago = mesClave(pagoDe(C, +m.diaPago));
+  let x = (+m.deudaInicial || 0) - suma(planDe(m), ([, v]) => +v);
+  for (const [mes, v] of planDe(m)) if (mes <= mesPago) x += +v;
   for (const v of movs()) {
     const e = efecto(v, m.id);
     if (e >= 0) continue;
@@ -216,7 +217,7 @@ function abonosDe(m) { return suma(movs(), v => Math.max(0, efecto(v, m.id))); }
 function infoCredito(m) {
   const dc = +m.diaCorte, dp = +m.diaPago, h = hoy();
   const s = saldo(m), deuda = Math.max(0, -s), limite = +m.limite || 0;
-  const r = { deuda, limite, disponible: limite ? redondear(limite - deuda) : null, porPagar: 0, corte: null, pago: null, sigCorte: null, diasPago: null, siguiente: 0, aMeses: [], faltaMeses: 0 };
+  const r = { deuda, limite, disponible: limite ? redondear(limite - deuda) : null, porPagar: 0, corte: null, pago: null, sigCorte: null, diasPago: null, siguiente: 0, aMeses: [], faltaMeses: 0, proximos: [] };
   if (!dc || !dp) return r;
   let corte = fechaEnMes(h.getFullYear(), h.getMonth(), dc);
   if (corte > h) corte = fechaEnMes(h.getFullYear(), h.getMonth() - 1, dc);
@@ -228,11 +229,17 @@ function infoCredito(m) {
   r.porPagar = redondear(Math.max(0, exigibleAl(m, corte) - abonos));
   r.siguiente = redondear(Math.max(0, exigibleAl(m, sig) - abonos));
   r.corte = corte; r.pago = pago; r.sigCorte = sig; r.diasPago = diasHasta(pago);
-  // lista de compras a meses que siguen vivas
-  for (const p of previas(m)) {
-    const faltan = +p.restantes - cobradasPrevia(p, corte, dc);
-    if (faltan > 0) r.aMeses.push({ nombre: p.nombre, emoji: '🗓️', mensualidad: +p.mensualidad, total: +p.restantes, faltan, faltaDinero: redondear(p.mensualidad * faltan), previa: true });
+  // próximos pagos: el de ahora y lo que ya está programado para los siguientes meses
+  r.proximos = [{ pago, monto: r.porPagar, actual: true }];
+  let C = corte, prev = exigibleAl(m, corte);
+  for (let k = 1; k <= 24; k++) {
+    C = fechaEnMes(corte.getFullYear(), corte.getMonth() + k, dc);
+    const x = exigibleAl(m, C);
+    r.proximos.push({ pago: pagoDe(C, dp), monto: redondear(Math.max(0, x - prev)) });
+    prev = x;
   }
+  while (r.proximos.length > 2 && r.proximos[r.proximos.length - 1].monto <= 0) r.proximos.pop();
+  // lista de compras a meses que siguen vivas
   for (const v of movs()) {
     if (!esMsi(v) || v.metodoId !== m.id) continue;
     const n = +v.meses, faltan = n - Math.min(n, cortesHasta(deIso(v.fecha), corte, dc));
@@ -1127,7 +1134,7 @@ function hojaMetodo(id) {
   const actualDeuda = m && m.tipo === 'credito' ? infoCredito(m).deuda : '';
   const colorSel = m?.color || (tipo === 'efectivo' ? 'miel' : 'matcha');
   const seg = (v, t) => `<label><input type="radio" name="tipo" value="${v}" ${tipo === v ? 'checked' : ''}><span>${t}</span></label>`;
-  previasForm = (m?.msiPrevias || []).map(p => ({ ...p }));
+  planForm = { ...(m?.plan || {}) };
   abrirHoja(`<form data-form="metodo" data-id="${esc(id || '')}" data-tipo="${tipo}" novalidate>
     ${cabeza(m ? (m.tipo === 'efectivo' && m.id === 'efectivo' ? 'Tu efectivo' : 'Editar tarjeta') : 'Nueva tarjeta')}
     ${m?.id === 'efectivo' ? `<input type="hidden" name="tipo" value="efectivo">` : `<div class="segmento" role="radiogroup" aria-label="Tipo">${seg('debito', 'Débito')}${seg('credito', 'Crédito')}${seg('efectivo', 'Efectivo')}</div>`}
@@ -1155,16 +1162,11 @@ function hojaMetodo(id) {
         <label class="campo"><span>Día de pago</span><select class="input" name="diaPago">${opcionesDia(m?.diaPago)}</select></label>
       </div>
       <p class="ayuda" style="margin-top:8px">Vienen en tu estado de cuenta. El de pago es el último día para pagar sin intereses.</p>
-      <fieldset class="caja-meses"><legend>¿Ya traes compras a meses?</legend>
-        <p class="ayuda">Ej. un cel a 12 meses. Agrégalas para que la app solo te cobre la mensualidad y no todo de golpe.</p>
-        <div id="previas"></div>
-        <label class="campo"><span>¿Qué fue?</span><input class="input" name="pNombre" maxlength="30" placeholder="Ej. iPhone"></label>
-        <div class="dos-col">
-          <label class="campo"><span>Pagas al mes</span><input class="input" name="pMensualidad" inputmode="decimal" placeholder="$0"></label>
-          <label class="campo"><span>Te faltan</span><select class="input" name="pFaltan">${Array.from({ length: 48 }, (_, i) => `<option value="${i + 1}">${i + 1} ${i ? 'meses' : 'mes'}</option>`).join('')}</select></label>
-        </div>
-        <p class="ayuda" style="margin-top:6px">Cuenta la mensualidad de este mes.</p>
-        <button type="button" class="btn suave ancho" style="margin-top:12px" data-a="agregarPrevia">Agregar compra a meses</button>
+      <fieldset class="caja-meses"><legend>¿Cuánto te toca pagar cada mes?</legend>
+        <p class="ayuda">Si lo que debes ya viene repartido (por ejemplo, compras a meses), pon cuánto pagas cada mes. Lo ves en la app de tu banco. Si pagas todo de una vez, déjalo vacío.</p>
+        <div id="plan"></div>
+        <button type="button" class="btn suave ancho" style="margin-top:12px" data-a="otroMes">+ Otro mes</button>
+        <p class="ayuda" id="plan-suma" style="margin-top:10px;font-weight:800"></p>
       </fieldset>
     </div>
     <fieldset><legend>Color</legend><div class="colores">${Object.entries(COLORES).map(([k, c]) => `<label><input type="radio" name="color" value="${k}" ${k === colorSel ? 'checked' : ''} aria-label="${c.n}"><span style="--tc-bg:${c.bg}"></span></label>`).join('')}</div></fieldset>
@@ -1172,19 +1174,43 @@ function hojaMetodo(id) {
     <button class="btn ancho grande" type="submit" style="margin-top:18px">${m ? 'Guardar cambios' : 'Agregar'}</button>
   </form>`);
   ajustarFormMetodo($('#hoja form'));
-  pintarPrevias(m);
+  pintarPlan();
 }
-function pintarPrevias(m) {
-  const caja = $('#previas');
+// meses que se muestran: desde el mes de tu siguiente pago (o este mes) hasta el último que tenga algo, mínimo 3
+function mesesPlan(form) {
+  const dp = +form.diaPago.value, dc = +form.diaCorte.value, h = hoy();
+  let inicio = new Date(h.getFullYear(), h.getMonth(), 1);
+  if (dc && dp) {
+    let corte = fechaEnMes(h.getFullYear(), h.getMonth(), dc);
+    if (corte > h) corte = fechaEnMes(h.getFullYear(), h.getMonth() - 1, dc);
+    const p = pagoDe(corte, dp);
+    inicio = new Date(p.getFullYear(), p.getMonth(), 1);
+  }
+  const ini = mesClave(inicio);
+  const conDato = Object.keys(planForm).filter(k => k >= ini && +planForm[k] > 0).sort();
+  let n = Math.max(3, +form.dataset.mesesPlan || 0);
+  if (conDato.length) {
+    const ult = deIso(conDato[conDato.length - 1] + '-01');
+    n = Math.max(n, (ult.getFullYear() - inicio.getFullYear()) * 12 + ult.getMonth() - inicio.getMonth() + 1);
+  }
+  form.dataset.mesesPlan = n;
+  return Array.from({ length: n }, (_, i) => { const d = new Date(inicio.getFullYear(), inicio.getMonth() + i, 1); return { clave: mesClave(d), nombre: MESES[d.getMonth()] + (d.getFullYear() !== h.getFullYear() ? ' ' + d.getFullYear() : '') }; });
+}
+function pintarPlan() {
+  const form = $('#hoja form'), caja = $('#plan', form);
   if (!caja) return;
-  const dc = +(m?.diaCorte || 0), h = hoy();
-  let corte = dc ? fechaEnMes(h.getFullYear(), h.getMonth(), dc) : h;
-  if (corte > h) corte = fechaEnMes(h.getFullYear(), h.getMonth() - 1, dc);
-  caja.innerHTML = previasForm.length ? `<ul class="hoja-lista" style="margin:6px 0 4px">${previasForm.map((p, i) => {
-    const faltan = dc && p.desde ? +p.restantes - cobradasPrevia(p, corte, dc) + 1 : +p.restantes;
-    return `<li><div class="opcion" style="cursor:default"><span class="ico">🗓️</span><span>${esc(p.nombre)}<small>${dinero(p.mensualidad)} al mes, te faltan ${Math.max(0, faltan)}</small></span>
-      <button type="button" class="btn-texto mas" data-a="quitarPrevia" data-i="${i}">Quitar</button></div></li>`;
-  }).join('')}</ul>` : '';
+  caja.innerHTML = mesesPlan(form).map(({ clave, nombre }) => `<label class="fila-plan"><span>${nombre.charAt(0).toUpperCase() + nombre.slice(1)}</span>
+    <input class="input" inputmode="decimal" data-mes="${clave}" value="${planForm[clave] ? esc(planForm[clave]) : ''}" placeholder="$0"></label>`).join('');
+  sumaPlan();
+}
+function sumaPlan() {
+  const form = $('#hoja form'), el = $('#plan-suma', form);
+  if (!el) return;
+  const total = redondear(suma(Object.values(planForm), v => +v)), deuda = leerMonto(form.deuda.value);
+  if (!total) { el.textContent = ''; return; }
+  el.textContent = !form.dataset.id && deuda && Math.abs(total - deuda) > 0.5
+    ? `Suman ${dinero(total)} y dijiste que debes ${dinero(deuda)}.${total < deuda ? ` Los ${dinero(deuda - total)} que faltan se cobran en tu siguiente pago.` : ''}`
+    : `Suman ${dinero(total)}. ✓`;
 }
 function ajustarFormMetodo(form) {
   const tipo = new FormData(form).get('tipo') || 'debito';
@@ -1212,13 +1238,17 @@ function guardarMetodo(form) {
     rec.limite = leerMonto(f.get('limite'));
     rec.deudaInicial = redondear(leerMonto(f.get('deuda')) + efectos);
     rec.diaCorte = +f.get('diaCorte'); rec.diaPago = +f.get('diaPago');
-    rec.msiPrevias = previasForm.map(p => ({ id: p.id, nombre: p.nombre, mensualidad: +p.mensualidad, restantes: +p.restantes, desde: p.desde || iso(hoy()) }));
-    const totalMeses = suma(rec.msiPrevias, p => p.mensualidad * p.restantes);
-    if (totalMeses > leerMonto(f.get('deuda')) + 0.5) { err.textContent = `Lo que te falta de compras a meses (${dinero(totalMeses)}) no puede ser más que lo que debes en total.`; return; }
+    rec.plan = Object.fromEntries(Object.entries(planForm).filter(([, v]) => +v > 0).map(([k, v]) => [k, redondear(+v)]));
+    const totalPlan = redondear(suma(Object.values(rec.plan), v => v));
+    let deuda = leerMonto(f.get('deuda'));
+    if (!String(f.get('deuda') || '').trim() && totalPlan) deuda = totalPlan;
+    if (totalPlan > deuda + 0.5) { err.textContent = `Lo que repartiste por mes (${dinero(totalPlan)}) es más de lo que debes en total (${dinero(deuda)}).`; err.scrollIntoView({ block: 'center' }); return; }
+    rec.deudaInicial = redondear(deuda + efectos);
+    delete rec.msiPrevias;
     delete rec.saldoInicial;
   } else {
     rec.saldoInicial = redondear(leerMonto(f.get('saldo')) - efectos);
-    delete rec.limite; delete rec.deudaInicial; delete rec.diaCorte; delete rec.diaPago; delete rec.msiPrevias;
+    delete rec.limite; delete rec.deudaInicial; delete rec.diaCorte; delete rec.diaPago; delete rec.msiPrevias; delete rec.plan;
   }
   poner('metodos', rec);
   const volverA = pendienteTrasNueva;
@@ -1238,6 +1268,12 @@ function hojaDetalleMetodo(id) {
         ? `<div class="caja-pago"><p>Para no pagar intereses, paga</p><strong>${dinero(ic.porPagar)}</strong><p>antes del ${fechaLarga(ic.pago)} (${enFaltan(ic.diasPago)}).</p>
             <div class="fila-botones"><button class="btn" data-a="pagarTarjeta" data-id="${esc(m.id)}">Ya pagué</button></div></div>`
         : `<div class="caja-pago ok"><p>Vas al corriente: no tienes nada pendiente de este corte. 🍵</p></div>`;
+      if (ic.proximos.length > 1 && ic.proximos.slice(1).some(x => x.monto > 0)) {
+        extra += `<section class="bloque" style="margin-top:20px"><h3>Tus próximos pagos</h3>
+          <dl class="tabla-detalle" style="margin-top:10px">${ic.proximos.map(x => `<div><dt>${MESES[x.pago.getMonth()].charAt(0).toUpperCase() + MESES[x.pago.getMonth()].slice(1)}${x.pago.getFullYear() !== hoy().getFullYear() ? ' ' + x.pago.getFullYear() : ''} <span class="muted" style="font-size:13px">(${fechaCorta(x.pago)})</span></dt>
+            <dd>${x.actual && x.monto <= 0 ? 'Pagado ✓' : dinero(x.monto)}</dd></div>`).join('')}</dl>
+          <p class="ayuda" style="margin-top:8px">Lo que compres de contado se suma al pago que sigue; lo de meses, a cada mes.</p></section>`;
+      }
       if (ic.aMeses.length) {
         extra += `<section class="bloque" style="margin-top:20px"><h3>Compras a meses</h3>
           <p class="ayuda" style="margin:4px 0 10px">Te falta pagar ${dinero(ic.faltaMeses)} en total. Cada mes solo se cobra la mensualidad.</p>
@@ -1249,7 +1285,6 @@ function hojaDetalleMetodo(id) {
       }
       extra += `<dl class="tabla-detalle">
         <div><dt>Próximo corte</dt><dd>${fechaLarga(ic.sigCorte)}</dd></div>
-        <div><dt>Pago que viene (por ahora)</dt><dd>${dinero(ic.siguiente)}</dd></div>
         <div><dt>Debes en total</dt><dd>${dinero(ic.deuda)}</dd></div>
         ${ic.limite ? `<div><dt>Te queda disponible</dt><dd>${dinero(ic.disponible)}</dd></div>` : ''}
       </dl>
@@ -1539,17 +1574,7 @@ const ACC = {
     const origen = ms.find(x => x.tipo === 'debito') || ms.find(x => x.tipo === 'efectivo');
     hojaMov({ tipo: 'mover', monto: ic.porPagar ? String(ic.porPagar) : '', metodoId: origen?.id || '', destinoId: m.id, nota: '' });
   },
-  agregarPrevia() {
-    const form = $('#hoja form'), err = $('.error', form);
-    const nombre = form.pNombre.value.trim(), mensualidad = leerMonto(form.pMensualidad.value), restantes = +form.pFaltan.value;
-    if (!nombre) { err.textContent = 'Escribe qué compraste a meses.'; return; }
-    if (!(mensualidad > 0)) { err.textContent = 'Escribe cuánto pagas al mes.'; return; }
-    err.textContent = '';
-    previasForm.push({ id: nuevoId(), nombre, mensualidad, restantes, desde: '' });
-    form.pNombre.value = ''; form.pMensualidad.value = ''; form.pFaltan.value = '1';
-    pintarPrevias(metodo(form.dataset.id));
-  },
-  quitarPrevia(d) { previasForm.splice(+d.i, 1); pintarPrevias(metodo($('#hoja form').dataset.id)); },
+  otroMes() { const form = $('#hoja form'); form.dataset.mesesPlan = (+form.dataset.mesesPlan || 3) + 1; pintarPlan(); },
   nuevaMeta() { hojaMeta(null); },
   editarMeta(d) { hojaMeta(d.id); },
   verMeta(d) { hojaDetalleMeta(d.id); },
@@ -1653,6 +1678,7 @@ document.addEventListener('change', e => {
     }
   }
   if (tipoForm === 'metodo' && t.name === 'tipo') ajustarFormMetodo(form);
+  if (tipoForm === 'metodo' && (t.name === 'diaCorte' || t.name === 'diaPago')) pintarPlan();
   if (tipoForm === 'meta') sugerirMeta(form);
   if (tipoForm === 'fijo' && t.name === 'tipo') {
     form.catId.innerHTML = opcionesCat(t.value, '');
@@ -1664,6 +1690,8 @@ document.addEventListener('input', e => {
   if (form?.dataset.form === 'meta' && ['objetivo', 'fechaLimite'].includes(e.target.name)) sugerirMeta(form);
   if (e.target.closest?.('.monto-grande')) e.target.style.cssText = anchoMonto(e.target.value);
   if (form?.dataset.form === 'mov' && e.target.name === 'monto') infoMeses(form);
+  if (form?.dataset.form === 'metodo' && e.target.dataset.mes) { planForm[e.target.dataset.mes] = leerMonto(e.target.value); sumaPlan(); }
+  if (form?.dataset.form === 'metodo' && e.target.name === 'deuda') sumaPlan();
 });
 $('#hoja-fondo').addEventListener('click', cerrarHoja);
 
